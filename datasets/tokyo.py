@@ -10,13 +10,13 @@ from PIL import Image
 class Tokyo(torch.utils.data.Dataset): 
 
     def __init__(self, config, data_path):
-        self.window = config.window
+        self.angle = config.angle
         self.img_h = config.img_h
         self.img_w = config.img_w
         self.batch_size = config.batch_size
         self.seed = config.seed
         self.data_path = data_path
-        self.img_list = glob.glob(os.path.join(self.data_path, "*/*/*.png"))
+        self.img_list = glob.glob(os.path.join(self.data_path, "**/*.png"), recursive=True)
         self.img_list = natsorted(self.img_list)
         self.pos_list = []
         self.transform = transforms.Compose([
@@ -30,13 +30,12 @@ class Tokyo(torch.utils.data.Dataset):
         for idx, img in enumerate(self.img_list):
             temp = []
             current_angle = int(img.split("_")[-1].split(".")[0])
-            positive_angles = [(current_angle - 30) % 360, (current_angle + 30) % 360]
-
-            for other_img in self.img_list:
-                if other_img != img and os.path.dirname(img) == os.path.dirname(other_img):
-                    other_angle = int(other_img.split("_")[-1].split(".")[0])
-                    if other_angle in positive_angles:
-                        temp.append(other_img)
+            for angle in self.angle:
+                positive_angle = (current_angle + angle) % 360
+                tmp_path = img.split("_")
+                tmp_path = "_".join(tmp_path[:-1] + [tmp_path[-1].replace(str(current_angle).zfill(3), str(positive_angle).zfill(3))])
+                if os.path.exists(tmp_path):
+                    temp.append(tmp_path)
             self.pos_list.append(temp)
 
     def __len__(self):
