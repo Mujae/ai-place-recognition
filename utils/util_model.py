@@ -10,6 +10,7 @@ import os
 from sklearn.metrics import roc_curve, auc, confusion_matrix
 from utils.util_vis import draw_roc_curve, draw_confusion_matrix, find_best_threshold
 from setup import config
+from PIL import Image
 
 class EmbedNet(pl.LightningModule):
     def __init__(self, backbone, model):
@@ -106,11 +107,10 @@ class LightningTripletNet(pl.LightningModule):
     def on_test_epoch_end(self):
         dist_pos = torch.cat([a for x, y, z, a, r in self.test_step_outputs]).detach().cpu().numpy()
         dist_neg = torch.cat([r for x, y, z, a, r in self.test_step_outputs]).detach().cpu().numpy()
-        self.test_step_outputs.clear()
 
         y_true = np.concatenate([np.ones_like(dist_pos), np.zeros_like(dist_neg)])
         y_scores = np.concatenate([dist_pos, dist_neg])
-        fpr, tpr, thresholds = roc_curve(y_true, -y_scores) 
+        fpr, tpr, thresholds = roc_curve(y_true, -y_scores)
         roc_auc = auc(fpr, tpr)
         best_threshold = find_best_threshold(fpr, tpr, thresholds)
         draw_roc_curve(fpr, tpr, thresholds, best_threshold=best_threshold, save_path=config.base_dir+'/roc_curve_test.png', roc_auc=roc_auc)
@@ -118,39 +118,48 @@ class LightningTripletNet(pl.LightningModule):
         cm = confusion_matrix(y_true, y_pred)
         draw_confusion_matrix(cm, best_threshold, save_path=config.base_dir+f'/confusion_matrix.png')
 
-        saved_count = 0
         for batch_idx, (a, p, n, dist_pos, dist_neg) in enumerate(self.test_step_outputs):
-            
             for i in range(len(dist_pos)):
-                if saved_count >= 10:
-                    break
-                if dist_pos[i] >= best_threshold:
-                    self.save_images(a[i], p[i], n[i], batch_idx, i, dist_pos[i], 'pos')
-                    saved_count += 1
-                if dist_neg[i] < best_threshold:
-                    self.save_images(a[i], p[i], n[i], batch_idx, i, dist_neg[i], 'neg')
-                    saved_count += 1
-            if saved_count >= 10:
-                break
+                if dist_pos[i] <= -best_threshold:
+                    self.save_misclassified_images(a[i], p[i], n[i], batch_idx, i, dist_pos[i], 'pos_correct')
 
-    def save_images(self, anchor, positive, negative, batch_idx, img_idx, wrong, label_type):
-        os.makedirs('misclassified', exist_ok=True)
-        wrong_str = f"{wrong:.2f}"
-        if label_type == 'pos':
-            self._save_image(anchor, f'misclassified/{batch_idx}_{img_idx}_{wrong_str}_anchor_pos.png')
-            self._save_image(positive, f'misclassified/{batch_idx}_{img_idx}_{wrong_str}_positive.png')
-        elif label_type == 'neg':
-            self._save_image(anchor, f'misclassified/{batch_idx}_{img_idx}_{wrong_str}_anchor_neg.png')
-            self._save_image(negative, f'misclassified/{batch_idx}_{img_idx}_{wrong_str}_negative.png')
-        
+                if dist_neg[i] > -best_threshold:
+                    self.save_misclassified_images(a[i], p[i], n[i], batch_idx, i, dist_neg[i], 'neg_correct')
 
-    def _save_image(self, tensor, filepath):
+    def save_misclassified_images(self, anchor, positive, negative, batch_idx, img_idx, score, label_type):
+        os.makedirs('correct_predictions', exist_ok=True)
+        score_str = f"{score:.2f}"
+        file_prefix = f'correct_predictions/{batch_idx}_{img_idx}_{score_str}_'
+
+        if label_type == 'pos_correct':
+            combined_image = self.combine_images(anchor, positive)
+            combined_image.save(f'{file_prefix}correct_pos.png')
+        elif label_type == 'neg_correct':
+            combined_image = self.combine_images(anchor, negative)
+            combined_image.save(f'{file_prefix}correct_neg.png')
+
+    def combine_images(self, anchor, second_image):
+        """Anchor와 Positive 또는 Negative 이미지를 한 PNG 파일에 저장"""
+        # GPU에 있을 수 있으니 CPU로 변환
+        anchor = anchor.cpu()
+        second_image = second_image.cpu()
+
+        # 이미지를 PIL로 변환
         inv_transform = transforms.Compose([
-            transforms.Normalize(
-                mean=[-0.485 / 0.229, -0.456 / 0.224, -0.406 / 0.225],
-                std=[1 / 0.229, 1 / 0.224, 1 / 0.225]
-            ),
+            transforms.Normalize(mean=[-0.485 / 0.229, -0.456 / 0.224, -0.406 / 0.225], std=[1 / 0.229, 1 / 0.224, 1 / 0.225]),
             transforms.ToPILImage()
         ])
-        inv_image = inv_transform(tensor)
-        inv_image.save(filepath)
+
+        anchor_image = inv_transform(anchor)
+        second_image_pil = inv_transform(second_image)
+
+        # Anchor와 Positive 또는 Negative 이미지를 가로로 붙임
+        total_width = anchor_image.width + second_image_pil.width
+        max_height = max(anchor_image.height, second_image_pil.height)
+        combined_image = Image.new('RGB', (total_width, max_height))
+
+        # 좌우로 이미지를 붙임
+        combined_image.paste(anchor_image, (0, 0))
+        combined_image.paste(second_image_pil, (anchor_image.width, 0))
+
+        return combined_image
